@@ -1,0 +1,34 @@
+{
+    "latex-workshop.latex.autoBuild.run": "onSave",
+    "latex-workshop.view.pdf.viewer": "browser",
+    "latex-workshop.latex.clean.subfolder.enabled": true,
+    "latex-workshop.latex.outDir": "%DIR%",
+    "latex-workshop.latex.tools": [
+        {
+            "name": "docker-latexmk",
+            "command": "docker",
+            "args": [
+                "run",
+                "--rm",
+                "-v",
+                "%DIR%:/workdir",
+                "-w",
+                "/workdir",
+                "texlive/texlive:latest",
+                "latexmk",
+                "-pdf",
+                "-interaction=nonstopmode",
+                "-file-line-error",
+                "%DOCFILE%"
+            ]
+        }
+    ],
+    "latex-workshop.latex.recipes": [
+        {
+            "name": "Docker Compile",
+            "tools": [
+                "docker-latexmk"
+            ]
+        }
+    ]
+}

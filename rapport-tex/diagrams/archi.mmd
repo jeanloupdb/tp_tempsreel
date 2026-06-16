@@ -1,0 +1,24 @@
+flowchart TB
+    UART([bus uart 115200])
+
+    subgraph core0[core 0]
+        RX["task_rx (p2)<br/>parser machine a etats"]
+    end
+
+    subgraph core1[core 1]
+        CTRL["task_control (p3)<br/>pid 100 ms"]
+        FS["task_failsafe (p4)<br/>prio max"]
+        ST["task_stats (p1)<br/>1 s"]
+    end
+
+    WDOG["wdog 2 s<br/>(software timer)"]
+    GPIO["gpio erreur<br/>(isr)"]
+
+    UART -->|octets| RX
+    RX -->|xQueueSend cmd| CTRL
+    RX -->|xTimerReset| WDOG
+    WDOG -->|notify timeout| FS
+    GPIO -->|notify gpio| FS
+    CTRL -->|OUTPUT| UART
+    FS -->|output=0 + ALARM| UART
+    ST -->|STATS| UART

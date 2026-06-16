@@ -1,0 +1,4 @@
+# tick freertos a 1000 hz -> 1 tick = 1 ms (cf cm2)
+# par defaut esp-idf est a 100 hz (10 ms) ce qui donnerait un jitter
+# de regulation trop gros. a 1 ms le jitter du pid reste sous les 5 ms demandes.
+CONFIG_FREERTOS_HZ=1000

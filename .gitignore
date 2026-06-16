@@ -1,0 +1,24 @@
+# build esp-idf
+ecu/build/
+ecu/sdkconfig
+ecu/sdkconfig.old
+ecu/managed_components/
+ecu/dependencies.lock
+
+# fichiers temporaires latex (le rapport final est rapport.pdf a la racine)
+rapport-tex/main.pdf
+rapport-tex/*.aux
+rapport-tex/*.log
+rapport-tex/*.out
+rapport-tex/*.toc
+rapport-tex/*.fls
+rapport-tex/*.fdb_latexmk
+rapport-tex/*.synctex.gz
+
+# python
+__pycache__/
+*.pyc
+
+# cours et sujet (materiel non perso) - decommente si tu ne veux pas les pousser
+# ressources/
+# tp/
