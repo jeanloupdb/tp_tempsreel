@@ -45,7 +45,7 @@ Support : ESP32 (dual core) + FreeRTOS, sous ESP-IDF. Code dans le dossier \text
 
 L'idee de depart vient du cours : une tache = une responsabilite. Plutot
 qu'une grosse boucle qui lit l'uart, calcule le pid et emet tout au meme
-endroit (ce qui serait monolithique et penalise), j'ai decoupe le systeme
+endroit (ce qui serait monolithique et penalise), on a decoupe le systeme
 en quatre taches qui communiquent uniquement par des primitives FreeRTOS,
 jamais par des variables globales partagees a nu.
 
@@ -139,7 +139,7 @@ La justification des priorites est detaillee aux sections 6 et 7.
     \item \textbf{mutex} sur l'emission uart : trois taches peuvent emettre
     (control, stats, failsafe). sans protection, deux ecritures pourraient
     entrelacer leurs octets et casser une trame (interdit par nf03). le mutex
-    serialise l'emission. j'ai pris un mutex et pas un semaphore binaire
+    serialise l'emission. on a pris un mutex et pas un semaphore binaire
     exactement pour l'\textbf{heritage de priorite} : si stats (p1) tient le
     mutex et que failsafe (p4) le demande, stats est temporairement remontee a
     p4 le temps de liberer, donc pas d'inversion de priorite non maitrisee
@@ -204,7 +204,7 @@ priorite haute, un flood de messages monopoliserait le cpu et retarderait le
 calcul du pid, donc la periode de 100 ms ne serait plus tenue et le jitter
 exploserait.
 
-J'ai fait l'inverse : \textbf{control (pid) est en priorite 3, strictement au
+On a fait l'inverse : \textbf{control (pid) est en priorite 3, strictement au
 dessus de rx (parser) en priorite 2}. Donc des qu'un cycle pid doit s'executer,
 il preempte le parser, calcule, emet, et rend la main. Le flood attend. En plus,
 les deux taches sont sur des coeurs differents (rx core 0, control core 1),
@@ -298,10 +298,10 @@ simple mode\_set en auto relance le tout.
 
 \subsection{Test de la couche protocole sur pc}
 
-J'ai teste a deux niveaux : d'abord un test unitaire de la couche protocole
+On a teste a deux niveaux : d'abord un test unitaire de la couche protocole
 sur pc, puis le firmware complet sous emulation qemu avec le vrai script de
-stress. Pour le test unitaire j'ai isole la couche protocole (construction de
-trame, crc, et la meme machine a etats que dans le firmware) et je l'ai
+stress. Pour le test unitaire on a isole la couche protocole (construction de
+trame, crc, et la meme machine a etats que dans le firmware) et on l'a
 compilee et executee sur pc avec les memes cas que le script : trame propre,
 trames collees, trame fragmentee, crc casse, id inconnu. La compilation passe
 avec \texttt{-Wall -Wextra -Werror} et le decodage se comporte comme prevu.
@@ -334,7 +334,7 @@ reconstituee, le crc casse est rejete, et l'id inconnu est ignore sans planter.
 
 \subsection{Test du firmware complet sous emulation QEMU}
 
-Faute de carte physique, j'ai fait tourner le firmware compile (esp-idf v5.4.4)
+Faute de carte physique, on a fait tourner le firmware compile (esp-idf v5.4.4)
 dans l'emulateur \textbf{qemu xtensa} fourni par espressif. Le bus ecu (uart2)
 est expose par qemu sur un socket tcp, et le script de stress du sujet s'y
 connecte directement (au lieu d'un \texttt{/dev/ttyUSB0}). C'est donc le vrai
@@ -395,7 +395,7 @@ l'oscilloscope sur une vraie carte.
     pour brancher le script de test il faut un adaptateur usb-serie sur ces pins,
     pas le port usb de debug. (on peut basculer le bus sur uart0 et couper les
     logs si on veut coller au script tel quel.)
-    \item la trame \textbf{dbg (0xff)} n'est pas emise, je m'en tiens aux
+    \item la trame \textbf{dbg (0xff)} n'est pas emise, on s'en tient aux
     messages exiges. elle pourrait servir a dumper l'etat interne du pid pour le
     reglage.
     \item pas de persistance : au reset on repart en mode off, compteurs remis a
