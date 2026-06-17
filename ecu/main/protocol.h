@@ -27,10 +27,7 @@
 // crc = xor de tous les octets de la trame sauf le start
 uint8_t crc_xor(const uint8_t *data, size_t len);
 
-// construit une trame complete dans out au format
-// [START][LEN(2 le)][TYPE][PAYLOAD][CRC]
-// out doit faire au moins 5 + payload_len octets
-// retourne la taille totale de la trame
+// construit la trame dans out, retourne sa taille (out doit faire 5 + payload_len mini)
 size_t build_frame(uint8_t *out, uint8_t type, const uint8_t *payload, uint16_t payload_len);
 
 #endif
