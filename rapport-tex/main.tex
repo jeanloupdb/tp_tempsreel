@@ -3,29 +3,11 @@
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage[french]{babel}
-\usepackage{lmodern}
-\usepackage{geometry}
-\geometry{top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm}
 \usepackage{graphicx}
 \graphicspath{{images/}}
-\usepackage{xcolor}
-\usepackage[hidelinks]{hyperref}
-\usepackage{fancyhdr}
 \usepackage{listings}
 
-\lstdefinestyle{console}{
-    basicstyle=\ttfamily\footnotesize,
-    breaklines=true,
-    frame=single,
-    captionpos=b,
-}
-\lstset{style=console}
-
-\pagestyle{fancy}
-\fancyhf{}
-\fancyhead[L]{\nouppercase{\leftmark}}
-\fancyhead[R]{TP temps réel - ECU}
-\fancyfoot[C]{\thepage}
+\lstset{basicstyle=\ttfamily\footnotesize, frame=single}
 
 \title{\textbf{TP Temps Réel - Conception d'un ECU\\Régulateur de vitesse}}
 \author{Jean-Loup Chrestien de Beauminy \and Dolovan Akdag}
@@ -38,50 +20,30 @@
 \noindent
 Support : ESP32 (dual core) + FreeRTOS, sous ESP-IDF. Code dans le dossier \texttt{ecu/}.
 
-\tableofcontents
-\newpage
-
 \section{Choix d'architecture}
 
-L'idée de départ vient du cours : une tâche = une responsabilité. Plutôt
-qu'une grosse boucle qui lit l'uart, calcule le pid et émet tout au même
-endroit (ce qui serait monolithique et pénalisé), on a découpé le système
-en quatre tâches qui communiquent uniquement par des primitives FreeRTOS,
-jamais par des variables globales partagées à nu.
-
-Les quatre tâches :
+On donne à chaque tâche une seule responsabilité. Une boucle monolithique qui
+lirait l'uart, calculerait le pid et émettrait au même endroit serait impossible
+à isoler en cas de surcharge et tiendrait mal sa période. On découpe donc en
+quatre tâches qui communiquent uniquement par des primitives FreeRTOS :
 
 \begin{itemize}
     \item \textbf{rx} : lit le bus uart et décode les trames (machine à états
-    octet par octet). c'est le seul point d'entrée des données.
-    \item \textbf{control} : le régulateur pid, réveillé toutes les 100 ms.
-    il consomme les consignes et vitesses décodées par rx et émet la commande
-    moteur.
-    \item \textbf{stats} : la télémétrie, une fois par seconde. lit les
-    compteurs et émet la trame stats.
-    \item \textbf{failsafe} : la sécurité. normalement endormie, réveillée par
-    un événement (front gpio ou timeout watchdog).
+    octet par octet). seul point d'entrée des données.
+    \item \textbf{control} : le pid, réveillé toutes les 100 ms, émet la commande moteur.
+    \item \textbf{stats} : la télémétrie, une fois par seconde.
+    \item \textbf{failsafe} : la sécurité, endormie, réveillée par un événement
+    (front gpio ou timeout watchdog).
 \end{itemize}
 
-Le point clé de l'archi c'est l'isolation sur les deux cœurs de l'esp32.
-Le parser (rx) est épinglé sur le \textbf{core 0}, et tout ce qui est critique
-pour la régulation (pid, failsafe, stats) sur le \textbf{core 1}. Comme ça un
-flood de messages sur l'uart sature au pire le core 0, mais le pid sur le
-core 1 continue de tourner à l'heure. C'est la réponse directe à l'exigence
-non fonctionnelle 02 (isolation des défaillances).
-
-La communication rx vers control passe par une \textbf{queue} de commandes.
-rx pousse des couples \texttt{(type, valeur)}, control les dépile au début de
-chaque cycle. On a donc un producteur / consommateur classique : rx ne touche
-jamais aux variables internes du pid, et control n'a pas à savoir comment une
-trame est décodée. Si la queue est pleine (control en retard, ne devrait pas
-arriver) on jette la commande et on incrémente un compteur, on ne bloque pas rx.
-
-L'état de supervision (mode courant, flag failsafe) est lu par control et
-écrit par rx (changement de mode) et par failsafe. Ces accès sont très courts
-donc protégés par une section critique (spinlock), pas par un mutex : on parle
-de quelques instructions, prendre un mutex coûterait plus cher que le travail
-lui même.
+L'isolation repose sur les deux cœurs : rx tourne sur le \textbf{core 0}, et tout
+ce qui est critique (control, failsafe, stats) sur le \textbf{core 1}. Un flood
+uart sature au pire le core 0, mais le pid sur le core 1 reste à l'heure
+(exigence nf02). rx pousse des couples \texttt{(type, valeur)} dans une
+\textbf{queue} que control dépile à chaque cycle, donc rx ne touche jamais au pid.
+Si la queue est pleine on jette la commande et on compte, sans bloquer rx. Le mode
+et le flag failsafe sont protégés par une section critique (spinlock) car les
+accès sont trop courts pour justifier un mutex.
 
 \section{Tableau des tâches}
 
@@ -98,333 +60,172 @@ stats    & 1 & 1 & périodique 1000 ms & 3072 \\
 \end{tabular}
 \end{center}
 
-Les priorités vont de 1 (idle+1) à 4. failsafe est la plus haute pour garantir
-son temps de réponse, stats la plus basse car non critique. Les tailles de
-stack sont dimensionnées à la louche puis vérifiables avec
-\texttt{uxTaskGetStackHighWaterMark}. rx et stats ont un peu plus de marge
-parce qu'elles font des logs et manipulent des buffers.
+Priorités de 1 (idle+1) à 4. failsafe au plus haut pour son temps de réponse,
+stats au plus bas car non critique. Stacks dimensionnées à la louche,
+vérifiables avec \texttt{uxTaskGetStackHighWaterMark}.
 
 \section{Diagramme des tâches et événements}
 
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=0.95\textwidth]{archi.pdf}
-    \caption{tâches, cœurs et flux d'événements (primitives freertos en légende)}
-\end{figure}
+\begin{center}
+    \includegraphics[width=0.95\textwidth]{archi.pdf}\\
+    \small tâches, cœurs et flux d'événements
+\end{center}
 
-Événements possibles :
-
-\begin{itemize}
-    \item arrivée d'octets sur l'uart : rx débloque, décode, éventuellement
-    push une commande dans la queue et réarme le watchdog.
-    \item tick 100 ms : control se réveille (vTaskDelayUntil), dépile la queue,
-    calcule le pid, émet output (uniquement en mode auto).
-    \item tick 1 s : stats émet les compteurs.
-    \item 2 s sans trame valide : le timer expire, son callback notifie failsafe.
-    \item front descendant sur le gpio d'erreur : l'isr notifie failsafe.
-    \item réception d'un mode\_set : rx remet le mode et efface le flag failsafe
-    (reprise, exigence 06).
-\end{itemize}
-
-La justification des priorités est détaillée aux sections 6 et 7.
+Événements : arrivée d'octets uart (rx décode, push queue, réarme le watchdog) ;
+tick 100 ms (control dépile, calcule, émet en mode auto) ; tick 1 s (stats émet) ;
+2 s sans trame valide (timer expire, notifie failsafe) ; front gpio d'erreur
+(isr notifie failsafe) ; \texttt{mode\_set} (rx remet le mode et efface le flag
+failsafe, reprise exigence 06).
 
 \section{Justification des mécanismes FreeRTOS}
 
 \begin{itemize}
-    \item \textbf{queue} pour rx vers control : découple le producteur du
-    consommateur et lisse les rafales. control lit à son rythme, rx n'est
-    jamais bloqué par le pid. envoi non bloquant (timeout 0) pour ne pas
-    ralentir le parser si la queue se remplit.
-
-    \item \textbf{mutex} sur l'émission uart : trois tâches peuvent émettre
-    (control, stats, failsafe). sans protection, deux écritures pourraient
-    entrelacer leurs octets et casser une trame (interdit par nf03). le mutex
-    sérialise l'émission. on a pris un mutex et pas un sémaphore binaire
-    exactement pour l'\textbf{héritage de priorité} : si stats (p1) tient le
-    mutex et que failsafe (p4) le demande, stats est temporairement remontée à
-    p4 le temps de libérer, donc pas d'inversion de priorité non maîtrisée
-    (nf04).
-
-    \item \textbf{section critique / spinlock} pour les compteurs et l'état de
-    supervision : accès de quelques cycles, sur un dual core il faut un spinlock
-    (pas juste masquer les interruptions) pour rester cohérent entre les deux
-    cœurs. plus rapide qu'un mutex pour un incrément.
-
-    \item \textbf{software timer} pour le watchdog rx : un timer one-shot de 2 s
-    réarmé à chaque trame valide. s'il expire c'est qu'on n'a rien reçu, son
-    callback notifie failsafe. pas besoin d'une tâche dédiée qui boucle.
-
-    \item \textbf{task notification} pour réveiller failsafe : le moyen le plus
-    rapide et le plus léger de signaler une tâche depuis une isr ou un callback
-    (plus rapide qu'un sémaphore). la valeur de la notification transporte la
-    cause (gpio ou timeout).
-
-    \item \textbf{vTaskDelayUntil} pour control et stats : maintient une période
-    absolue sans dérive. un simple vTaskDelay accumulerait le temps de calcul à
-    chaque tour et ferait dériver la période, donc du jitter. vTaskDelayUntil
-    cale les réveils sur une base de temps fixe.
+    \item \textbf{queue} rx vers control : découple producteur et consommateur,
+    lisse les rafales, envoi non bloquant (timeout 0) pour ne pas ralentir le parser.
+    \item \textbf{mutex} sur l'émission uart : trois tâches émettent
+    (control, stats, failsafe), sans protection deux écritures entrelaceraient
+    leurs octets (interdit nf03). On prend un mutex et pas un sémaphore pour
+    l'\textbf{héritage de priorité} : si stats (p1) tient le mutex et que failsafe
+    (p4) le demande, stats est remontée à p4 le temps de libérer, pas d'inversion
+    de priorité (nf04).
+    \item \textbf{section critique / spinlock} pour les compteurs et l'état :
+    accès de quelques cycles, sur dual core il faut un spinlock pour rester
+    cohérent entre les cœurs, plus rapide qu'un mutex.
+    \item \textbf{software timer} pour le watchdog rx : one-shot de 2 s réarmé à
+    chaque trame valide, son callback notifie failsafe s'il expire. pas de tâche
+    qui boucle.
+    \item \textbf{task notification} pour réveiller failsafe : le plus rapide
+    depuis une isr ou un callback, la valeur transporte la cause (gpio ou timeout).
+    \item \textbf{vTaskDelayUntil} pour control et stats : période absolue sans
+    dérive (un vTaskDelay accumulerait le temps de calcul et ferait du jitter).
 \end{itemize}
 
 \section{Charge cpu théorique}
 
-Le tick FreeRTOS est réglé à 1000 Hz (1 ms) dans \texttt{sdkconfig.defaults}.
-À 100 Hz par défaut la résolution serait de 10 ms, impossible de garantir un
-jitter sous 5 ms. À 1 ms le réveil du pid est calé au tick près.
+Tick FreeRTOS réglé à 1000 Hz (1 ms) dans \texttt{sdkconfig.defaults} : à 100 Hz
+la résolution serait de 10 ms, impossible de garantir un jitter sous 5 ms. Les
+wcet ci-dessous sont des estimations (pas de mesure oscillo).
 
-Les wcet ci-dessous sont des estimations (pas de mesure oscillo, build only).
+Core 1 : control (dépile + pid + trame output) estimé 200 us / 100 ms =
+\textbf{0,2 \%} ; stats estimé 500 us/s = \textbf{0,05 \%} ; failsafe négligeable.
+Total core 1 sous \textbf{1 \%}.
 
-\textbf{core 1 :}
-\begin{itemize}
-    \item control : dépiler la queue + calcul pid + construire et copier une
-    trame output dans le ring buffer tx. estimé 200 us. charge =
-    200 us / 100 ms = \textbf{0,2 \%}.
-    \item stats : snapshot des compteurs + une trame + un log console. estimé
-    500 us toutes les secondes = \textbf{0,05 \%}.
-    \item failsafe : événementiel et rare, négligeable.
-\end{itemize}
-Total core 1 : largement sous \textbf{1 \%}.
+Core 0 : rx reçoit à 115200 bauds, soit 11520 octets/s, chaque octet passant dans
+le parser (~0,5 us) plus le coût du driver, ce qui reste autour de \textbf{1 à
+2 \%} même en flood continu.
 
-\textbf{core 0 :}
-\begin{itemize}
-    \item rx : à 115200 bauds en 8n1 on a au plus 115200 / 10 = 11520 octets/s.
-    chaque octet passe dans le parser (un switch, quelques instructions,
-    environ 0,5 us). ça fait environ 6 ms de traitement par seconde, plus le
-    coût des lectures uart et des interruptions du driver. on reste autour de
-    \textbf{1 à 2 \%} même en flood continu.
-\end{itemize}
-
-Conclusion : même sous surcharge uart maximale, le core 1 (la régulation)
-n'est quasiment pas chargé. On est très loin de la saturation, la marge est
-énorme. Le déterminisme du pid est garanti par construction.
+Même sous surcharge uart maximale, le core 1 (la régulation) n'est donc quasiment
+pas chargé et le pid garde son déterminisme.
 
 \section{Priorité de l'uart par rapport au contrôle moteur}
 
-C'est la question centrale du sujet. Si on traitait la réception uart en
-priorité haute, un flood de messages monopoliserait le cpu et retarderait le
-calcul du pid, donc la période de 100 ms ne serait plus tenue et le jitter
-exploserait.
-
-On a fait l'inverse : \textbf{control (pid) est en priorité 3, strictement au
-dessus de rx (parser) en priorité 2}. Donc dès qu'un cycle pid doit s'exécuter,
-il préempte le parser, calcule, émet, et rend la main. Le flood attend. En plus,
-les deux tâches sont sur des cœurs différents (rx core 0, control core 1),
-donc en pratique elles ne se disputent même pas le cpu : le parser peut tourner
-à fond sur le core 0 sans jamais grignoter une microseconde au pid sur le
-core 1.
-
-La réception n'est pas sacrifiée pour autant : la queue absorbe les rafales, et
-la perte éventuelle de messages sous flood extrême est comptée (compteur
-dropped) et non bloquante. On privilégie la régulation, qui est la fonction
-critique, et on dégrade proprement la réception si besoin.
+Si on traitait l'uart en priorité haute, un flood retarderait le pid et la
+période de 100 ms ne serait plus tenue. On fait l'inverse : \textbf{control
+(prio 3) est au dessus de rx (prio 2)}, donc un cycle pid préempte le parser. Les
+deux tâches sont en plus sur des cœurs différents, elles ne se disputent donc pas
+le cpu. La réception n'est pas sacrifiée pour autant : la queue absorbe les
+rafales, et la perte éventuelle sous flood extrême est comptée (dropped) sans
+bloquer. La régulation prime, la réception se dégrade proprement.
 
 \section{Choix des priorités et préemption}
 
-L'ordonnanceur est en préemptif à priorité fixe (fpp). L'ordre des priorités
-suit la criticité temps réel :
-
-\begin{enumerate}
-    \item \textbf{failsafe (4, max)} : la sécurité passe avant tout. comme elle
-    est la plus prioritaire, dès qu'elle est notifiée elle préempte n'importe
-    quelle autre tâche et s'exécute tout de suite. c'est ce qui garantit le
-    temps de réponse sous 5 ms exigé : elle force output=0 et émet l'alarme sans
-    attendre le prochain cycle du pid. le travail dans l'isr gpio est réduit au
-    minimum (juste une notification, le reste est fait dans la tâche).
-    \item \textbf{control (3)} : la régulation, fonction principale, doit être
-    prioritaire sur tout sauf la sécurité.
-    \item \textbf{rx (2)} : important mais ne doit pas perturber control.
-    \item \textbf{stats (1)} : télémétrie, peut attendre, aucune contrainte dure.
-\end{enumerate}
-
-La préemption joue donc dans ce sens : failsafe \textgreater{} control
-\textgreater{} rx \textgreater{} stats. Un événement de sécurité interrompt un
-calcul pid en cours ; un calcul pid interrompt le parser ; le parser passe avant
-la télémétrie. C'est exactement l'ordre voulu pour respecter les contraintes.
+Ordonnanceur préemptif à priorité fixe. L'ordre suit la criticité temps réel :
+\textbf{failsafe (4)} la sécurité passe avant tout, dès qu'elle est notifiée elle
+préempte n'importe quoi et force output=0 sous 5 ms sans attendre le prochain
+cycle pid (l'isr gpio se limite à une notification) ; \textbf{control (3)} la
+régulation, prioritaire sur tout sauf la sécurité ; \textbf{rx (2)} important mais
+ne doit pas perturber control ; \textbf{stats (1)} aucune contrainte dure. La
+préemption joue donc failsafe \textgreater{} control \textgreater{} rx
+\textgreater{} stats, exactement l'ordre voulu.
 
 \section{Monitoring et debug}
 
 \begin{itemize}
-    \item \textbf{trame stats (0x83)} émise sur le bus toutes les secondes :
-    rx valides, rx crc erreur, rx dropped, tx output, et un compteur en plus
-    rx unknown (ids inconnus). l'outil de test côté pc peut suivre l'état de
-    l'ecu en direct.
-    \item \textbf{log console} sur l'uart0 (séparé du bus, qui est sur uart2) :
-    chaque seconde la tâche stats sort une ligne avec le mode courant, le flag
-    failsafe, tous les compteurs, le \textbf{heap libre}
-    (\texttt{esp\_get\_free\_heap\_size}) pour détecter une fuite mémoire, et le
-    \textbf{jitter max} de la période pid (\texttt{jit\_max}, mesuré via
+    \item \textbf{trame stats (0x83)} sur le bus chaque seconde : rx valides, crc
+    erreur, dropped, tx output, unknown (ids inconnus). l'outil pc suit l'ecu en direct.
+    \item \textbf{log console} sur l'uart0 (séparé du bus sur uart2) : mode, flag
+    failsafe, compteurs, \textbf{heap libre} (\texttt{esp\_get\_free\_heap\_size},
+    détecte une fuite) et \textbf{jitter max} du pid (\texttt{jit\_max}, via
     \texttt{esp\_timer\_get\_time}).
-    \item \textbf{log de warning} à chaque failsafe avec la cause.
-    \item \textbf{led} sur le gpio 2 (led onboard) : allumée en failsafe,
-    éteinte dès la reprise. debug visuel immédiat sans brancher de console.
-    \item séparer le bus binaire (uart2) des logs texte (uart0) évite de
-    polluer les trames avec des messages de debug, et c'est lisible côté console.
-    \item en debug plus poussé, \texttt{uxTaskGetStackHighWaterMark} permet de
-    vérifier le dimensionnement des stacks et \texttt{vTaskGetRunTimeStats} de
-    mesurer la charge réelle par tâche.
+    \item \textbf{led} sur le gpio 2 : allumée en failsafe, éteinte à la reprise,
+    debug visuel sans console.
+    \item séparer le bus binaire (uart2) des logs texte (uart0) évite de polluer
+    les trames.
 \end{itemize}
 
 \section{Analyse de robustesse}
 
-Le sujet décrit un script de stress qui injecte : des trames collées, des
-trames fragmentées, des crc faux, des ids inconnus, et un flood. La robustesse
-repose entièrement sur le parser, qui est une machine à états
+Le script de stress injecte : trames collées, fragmentées, crc faux, ids inconnus,
+flood. La robustesse repose sur le parser, une machine à états
 (start, len, data, crc) qui garde son état entre deux lectures uart.
 
 \begin{itemize}
-    \item \textbf{trames fragmentées} : comme on décode octet par octet et qu'on
-    conserve l'état du parser entre deux appels à la lecture uart, une trame
-    coupée au milieu reprend exactement là où elle s'était arrêtée. pas de perte
-    d'état.
-    \item \textbf{trames collées} : après avoir traité une trame complète on
-    repart directement à l'état start. l'octet suivant est aussitôt interprété
-    comme le début de la trame d'après. on enchaîne sans rien perdre.
-    \item \textbf{crc faux} : on recalcule le xor (len + type + payload) et on
-    compare à l'octet reçu. si ça ne colle pas, la trame est jetée
-    silencieusement, le compteur crc augmente et on resynchronise.
-    \item \textbf{len incohérente} : si le len annoncé est nul ou dépasse la
-    taille max acceptée, on rejette et on repart à start sans rien stocker. ça
-    évite qu'une longueur absurde fasse déborder le buffer ou bloque le parser
-    sur une trame qui n'arrivera jamais.
-    \item \textbf{id inconnu} : trame structurellement valide mais type non géré,
-    ignorée, le compteur unknown augmente (le crc était bon, donc on ne le compte
-    pas en erreur crc). on ne plante pas, on continue.
+    \item \textbf{fragmentées} : on décode octet par octet en conservant l'état,
+    une trame coupée reprend là où elle s'était arrêtée.
+    \item \textbf{collées} : après une trame complète on repart à start, l'octet
+    suivant est aussitôt le début de la trame d'après.
+    \item \textbf{crc faux} : on recalcule le xor (len+type+payload), si ça ne
+    colle pas on jette, on compte (crc++) et on resynchronise.
+    \item \textbf{len incohérente} : len nul ou trop grand, on rejette et on
+    repart à start, pas de débordement.
+    \item \textbf{id inconnu} : trame valide mais type non géré, ignorée, unknown++
+    (le crc était bon donc pas compté en erreur crc).
     \item \textbf{flood} : le parser tourne sur le core 0 sans toucher au pid
-    (core 1). la queue absorbe les rafales et, si elle sature, on droppe en
-    comptant. la régulation reste à l'heure.
+    (core 1), la queue absorbe et droppe en comptant si elle sature.
 \end{itemize}
 
-Côté sécurité, les deux déclencheurs de failsafe sont indépendants : si le pc
-arrête d'émettre, le watchdog de 2 s tombe et coupe ; un front sur le gpio
-d'erreur coupe aussi, en moins de 5 ms grâce à la tâche prioritaire. après, un
-simple mode\_set en auto relance le tout.
+Les deux déclencheurs de failsafe sont indépendants : silence du pc (watchdog 2 s)
+ou front gpio d'erreur (sous 5 ms grâce à la tâche prioritaire). Un \texttt{mode\_set}
+auto relance ensuite.
 
-\subsection{Test de la couche protocole sur pc}
+\textbf{Tests.} D'abord un test unitaire de la couche protocole sur pc (construction
+de trame, crc, même machine à états que le firmware), compilé avec
+\texttt{-Wall -Wextra -Werror} : les six cas (trame propre, collées, fragmentée,
+crc cassé, id inconnu) se comportent comme prévu. Ensuite le firmware complet
+(esp-idf v5.4.4) sous \textbf{qemu xtensa}, le bus uart2 exposé sur un socket tcp,
+avec le script de stress fourni : c'est le scénario complet rejoué de bout
+en bout.
 
-On a testé à deux niveaux : d'abord un test unitaire de la couche protocole
-sur pc, puis le firmware complet sous émulation qemu avec le vrai script de
-stress. Pour le test unitaire on a isolé la couche protocole (construction de
-trame, crc, et la même machine à états que dans le firmware) et on l'a
-compilée et exécutée sur pc avec les mêmes cas que le script : trame propre,
-trames collées, trame fragmentée, crc cassé, id inconnu. La compilation passe
-avec \texttt{-Wall -Wextra -Werror} et le décodage se comporte comme prévu.
+\begin{center}
+    \includegraphics[width=0.95\textwidth]{qemu_counters.png}\\
+    \small run qemu : passage en mode auto (\texttt{mode=2}), régulation qui
+    démarre (\texttt{rxok}, \texttt{out} montent), \texttt{drop=0}. sous flood
+    \texttt{unk} et \texttt{crc} montent (totaux \texttt{unk=50}, \texttt{crc=2}).
+\end{center}
 
-\begin{lstlisting}[caption={sortie reelle du test protocole (gcc, sur pc)}]
-== test couche protocole ==
+La trace confirme : régulation en mode auto, les 50 trames aléatoires comptées en
+\texttt{unk=50} sans planter, les deux trames cassées en \texttt{crc=2},
+\texttt{drop=0} sur tout le run (la queue n'a jamais débordé), failsafe au silence
+(\texttt{fs=1}, \texttt{output=0}, alarme, le script affiche \texttt{verification
+reussie}) et \texttt{heap} stable. La seule chose que qemu ne valide pas, c'est le
+timing exact (pas cycle-accurate), donc on l'a mesuré sur carte.
 
-1. setpoint 90.0 -> trame de 9 octets : aa 05 00 01 00 00 b4 42 f2
-  -> trame valide type=0x01 val=90.00
+\textbf{Validation sur cible.} Firmware flashé sur un ESP32-D0WD-V3 (dual core,
+240 MHz). Boot ok, gpio configurés (led en sortie, entrée d'erreur en pullup sur
+front descendant), et comme rien n'émet le watchdog déclenche le failsafe à 2,3 s
+(\texttt{cause=1}). On a instrumenté \texttt{task\_control} avec
+\texttt{esp\_timer\_get\_time} : à chaque cycle on mesure l'écart à la période de
+100 ms et on garde le pire cas. Sur la carte \textbf{jit\_max plafonne à 179 us
+(0,18 ms)}, largement sous les 5 ms demandés.
 
-2. deux trames collees (setpoint + speed)
-  -> trame valide type=0x01 val=90.00
-  -> trame valide type=0x02 val=42.50
-
-3. trame fragmentee (2 morceaux)
-  -> trame valide type=0x02 val=42.50
-
-4. trame avec crc casse
-  -> crc faux (recu 0x0d attendu 0xf2) rejet
-
-5. id inconnu (0x42)
-  -> id inconnu 0x42 ignore
-
-== bilan : ok=4 unknown=1 rejets=1 ==
-\end{lstlisting}
-
-On retrouve bien les six comportements attendus : la trame valide est décodée,
-les deux trames collées sont séparées correctement, la trame fragmentée est
-reconstituée, le crc cassé est rejeté, et l'id inconnu est ignoré sans planter.
-
-\subsection{Test du firmware complet sous émulation QEMU}
-
-Faute de carte physique, on a fait tourner le firmware compilé (esp-idf v5.4.4)
-dans l'émulateur \textbf{qemu xtensa} fourni par espressif. Le bus ecu (uart2)
-est exposé par qemu sur un socket tcp, et le script de stress du sujet s'y
-connecte directement (au lieu d'un \texttt{/dev/ttyUSB0}). C'est donc le vrai
-scénario du sujet (régulation, flood, trames cassées, silence radio) rejoué de
-bout en bout, le firmware s'exécutant réellement.
-
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=0.92\textwidth]{qemu_stress.png}
-    \caption{côté pc : le script de stress branché sur l'ecu émulé. la vitesse
-    converge vers la consigne, le stress est encaissé, puis le failsafe coupe la
-    commande (output=0) avec l'alarme \texttt{timeout rx}}
-\end{figure}
-
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=0.95\textwidth]{qemu_counters.png}
-    \caption{côté ecu (console uart0) : les compteurs de télémétrie pendant le
-    run}
-\end{figure}
-
-Ce que la trace montre, point par point :
-\begin{itemize}
-    \item \textbf{régulation} : en mode auto, \texttt{rxok} et \texttt{out}
-    montent régulièrement, la commande moteur est émise à chaque cycle.
-    \item \textbf{flood} : les 50 trames à id aléatoire sont comptées en
-    \texttt{unk=50} (ids inconnus), sans planter et sans bloquer la régulation.
-    \item \textbf{trames cassées} : les deux trames volontairement invalides
-    (crc faux et fragment mal terminé) donnent \texttt{crc=2}.
-    \item \textbf{aucune perte} : \texttt{drop=0} sur tout le run, la queue n'a
-    jamais débordé même pendant le flood.
-    \item \textbf{failsafe} : à la coupure des émissions, l'ecu passe en
-    \texttt{fs=1}, force \texttt{output=0} et émet l'alarme. le script côté pc
-    confirme (\texttt{verification reussie}).
-    \item \textbf{pas de fuite mémoire} : \texttt{heap} reste à 289312 octets du
-    début à la fin.
-\end{itemize}
-
-La seule chose que l'émulation ne valide pas finement, c'est le timing exact
-(qemu n'est pas cycle-accurate). On l'a donc mesuré sur une vraie carte.
-
-\subsection{Validation sur cible (ESP32 reel)}
-
-On a flashé le firmware sur un ESP32-D0WD-V3 (dual core, 240 MHz) et capturé la
-console uart0. Le boot se passe bien, les gpio sont configurés comme prévu (led
-en sortie, entrée d'erreur en pullup avec interruption sur front descendant), et
-comme rien n'émet sur le bus le watchdog déclenche le failsafe à 2,3 s
-(\texttt{cause=1}). Le heap reste stable.
-
-Pour répondre à l'exigence de jitter, on a instrumenté \texttt{task\_control}
-avec \texttt{esp\_timer\_get\_time} : à chaque cycle on mesure l'écart entre la
-période réelle et les 100 ms visés, et on garde le pire cas (\texttt{jit\_max}),
-affiché dans les stats. Sur la carte, \textbf{jit\_max plafonne à 179 us, soit
-0,18 ms} (le pire cas tombe sur le tout premier cycle au démarrage, ensuite ça
-ne bouge plus). On est donc largement sous les 5 ms demandés, avec une marge de
-l'ordre d'un facteur 28.
-
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=0.95\textwidth]{hw_console.png}
-    \caption{console uart0 sur l'esp32 : boot, configuration gpio, failsafe
-    watchdog a 2,3 s et jitter mesuré (jit\_max=179 us)}
-\end{figure}
+\begin{center}
+    \includegraphics[width=0.95\textwidth]{hw_console.png}\\
+    \small esp32 réel : démarrage, config gpio, télémétrie avec le jitter mesuré
+    (\texttt{jit\_max=179us}) et failsafe watchdog (\texttt{cause=1})
+\end{center}
 
 \section{Limitations}
 
 \begin{itemize}
-    \item le firmware a été testé sous émulation qemu (scénario de stress
-    complet) et sur un vrai ESP32-D0WD-V3 (boot, failsafe watchdog, jitter mesuré
-    à 0,18 ms). ce qu'on n'a pas pu faire sur la carte : rejouer le \textbf{flood
-    réel}, parce que le bus est sur uart2 et il aurait fallu un second adaptateur
-    usb-série sur les gpio 16/17. le jitter sous forte charge externe reste donc
-    à confirmer, même si la marge mesurée (facteur 28) laisse de la réserve.
-    \item les \textbf{wcet et la charge cpu restent des estimations}, pas des
-    mesures fines. à confirmer avec \texttt{vTaskGetRunTimeStats} et l'analyse du
-    high water mark.
-    \item les \textbf{coefficients du pid} (kp=1, ki=0.1, kd=0.01) sont ceux de
-    l'exemple du sujet, ils ne sont pas réglés pour un vrai modèle de véhicule.
-    il faudrait les ajuster sur le banc.
-    \item le bus ecu est sur \textbf{uart2} (pins 16/17), séparé de la console.
-    pour brancher le script de test il faut un adaptateur usb-série sur ces pins,
-    pas le port usb de debug. (on peut basculer le bus sur uart0 et couper les
-    logs si on veut coller au script tel quel.)
-    \item la trame \textbf{dbg (0xff)} n'est pas émise, on s'en tient aux
-    messages exigés. elle pourrait servir à dumper l'état interne du pid pour le
-    réglage.
-    \item pas de persistance : au reset on repart en mode off, compteurs remis à
-    zéro.
+    \item testé sous qemu (stress complet) et sur carte (boot, failsafe watchdog,
+    jitter 0,18 ms). pas pu rejouer le \textbf{flood réel} sur la carte : le bus
+    est sur uart2, il aurait fallu un second adaptateur usb-série sur les gpio
+    16/17. le jitter sous forte charge externe reste à confirmer.
+    \item \textbf{wcet et charge cpu} sont des estimations, à confirmer avec
+    \texttt{vTaskGetRunTimeStats} et le high water mark.
+    \item \textbf{coefficients pid} (kp=1, ki=0.1, kd=0.01) ceux fournis, pas
+    réglés pour un vrai véhicule.
+    \item pas de persistance : au reset on repart en mode off, compteurs à zéro.
 \end{itemize}
 
 \end{document}
