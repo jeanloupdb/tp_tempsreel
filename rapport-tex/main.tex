@@ -249,8 +249,10 @@ la télémétrie. C'est exactement l'ordre voulu pour respecter les contraintes.
     l'ecu en direct.
     \item \textbf{log console} sur l'uart0 (séparé du bus, qui est sur uart2) :
     chaque seconde la tâche stats sort une ligne avec le mode courant, le flag
-    failsafe, tous les compteurs et le \textbf{heap libre}
-    (\texttt{esp\_get\_free\_heap\_size}) pour détecter une fuite mémoire.
+    failsafe, tous les compteurs, le \textbf{heap libre}
+    (\texttt{esp\_get\_free\_heap\_size}) pour détecter une fuite mémoire, et le
+    \textbf{jitter max} de la période pid (\texttt{jit\_max}, mesuré via
+    \texttt{esp\_timer\_get\_time}).
     \item \textbf{log de warning} à chaque failsafe avec la cause.
     \item \textbf{led} sur le gpio 2 (led onboard) : allumée en failsafe,
     éteinte dès la reprise. debug visuel immédiat sans brancher de console.
@@ -374,20 +376,43 @@ Ce que la trace montre, point par point :
 \end{itemize}
 
 La seule chose que l'émulation ne valide pas finement, c'est le timing exact
-(qemu n'est pas cycle-accurate), donc le jitter sous 5 ms reste à confirmer à
-l'oscilloscope sur une vraie carte.
+(qemu n'est pas cycle-accurate). On l'a donc mesuré sur une vraie carte.
+
+\subsection{Validation sur cible (ESP32 reel)}
+
+On a flashé le firmware sur un ESP32-D0WD-V3 (dual core, 240 MHz) et capturé la
+console uart0. Le boot se passe bien, les gpio sont configurés comme prévu (led
+en sortie, entrée d'erreur en pullup avec interruption sur front descendant), et
+comme rien n'émet sur le bus le watchdog déclenche le failsafe à 2,3 s
+(\texttt{cause=1}). Le heap reste stable.
+
+Pour répondre à l'exigence de jitter, on a instrumenté \texttt{task\_control}
+avec \texttt{esp\_timer\_get\_time} : à chaque cycle on mesure l'écart entre la
+période réelle et les 100 ms visés, et on garde le pire cas (\texttt{jit\_max}),
+affiché dans les stats. Sur la carte, \textbf{jit\_max plafonne à 179 us, soit
+0,18 ms} (le pire cas tombe sur le tout premier cycle au démarrage, ensuite ça
+ne bouge plus). On est donc largement sous les 5 ms demandés, avec une marge de
+l'ordre d'un facteur 28.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.95\textwidth]{hw_console.png}
+    \caption{console uart0 sur l'esp32 : boot, configuration gpio, failsafe
+    watchdog a 2,3 s et jitter mesuré (jit\_max=179 us)}
+\end{figure}
 
 \section{Limitations}
 
 \begin{itemize}
-    \item \textbf{pas de carte physique} : le firmware compile sous esp-idf
-    v5.4.4 (\texttt{idf.py set-target esp32 \&\& idf.py build}) et tourne sous
-    émulation qemu, mais n'a pas été testé sur un vrai esp32. comme qemu n'est
-    pas cycle-accurate, le \textbf{jitter sous 5 ms} et le temps de réaction du
-    failsafe restent à mesurer à l'oscilloscope sur cible.
-    \item du même coup les \textbf{wcet et la charge cpu restent des estimations},
-    pas des mesures hardware. à confirmer avec \texttt{vTaskGetRunTimeStats} et
-    l'analyse du high water mark sur une vraie carte.
+    \item le firmware a été testé sous émulation qemu (scénario de stress
+    complet) et sur un vrai ESP32-D0WD-V3 (boot, failsafe watchdog, jitter mesuré
+    à 0,18 ms). ce qu'on n'a pas pu faire sur la carte : rejouer le \textbf{flood
+    réel}, parce que le bus est sur uart2 et il aurait fallu un second adaptateur
+    usb-série sur les gpio 16/17. le jitter sous forte charge externe reste donc
+    à confirmer, même si la marge mesurée (facteur 28) laisse de la réserve.
+    \item les \textbf{wcet et la charge cpu restent des estimations}, pas des
+    mesures fines. à confirmer avec \texttt{vTaskGetRunTimeStats} et l'analyse du
+    high water mark.
     \item les \textbf{coefficients du pid} (kp=1, ki=0.1, kd=0.01) sont ceux de
     l'exemple du sujet, ils ne sont pas réglés pour un vrai modèle de véhicule.
     il faudrait les ajuster sur le banc.

@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_attr.h"
+#include "esp_timer.h"
 
 #include "protocol.h"
 
@@ -47,6 +48,7 @@ static portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static volatile int  g_mode = MODE_OFF;
 static volatile bool g_failsafe = false;
+static volatile int32_t g_jit_us = 0;   // jitter max mesure sur la periode pid
 
 typedef struct {
     uint32_t rx_valid;
@@ -218,9 +220,16 @@ static void task_control(void *arg)
     TickType_t last = xTaskGetTickCount();
     float setpoint = 0.0f, speed = 0.0f;
     float integral = 0.0f, prev_err = 0.0f;
+    int64_t prev_us = esp_timer_get_time();
 
     for (;;) {
         vTaskDelayUntil(&last, pdMS_TO_TICKS(100));
+
+        int64_t now_us = esp_timer_get_time();
+        int32_t jit = (int32_t)(now_us - prev_us - 100000);
+        if (jit < 0) jit = -jit;
+        if (jit > g_jit_us) g_jit_us = jit;
+        prev_us = now_us;
 
         cmd_t c;
         while (xQueueReceive(g_cmd_queue, &c, 0) == pdTRUE) {
@@ -282,11 +291,11 @@ static void task_stats(void *arg)
         tx_frame(MSG_STATS, (const uint8_t *)snap, sizeof(snap));
 
         // %u et pas %lu sinon -Werror=format rale (uint32_t = long unsigned sur xtensa)
-        ESP_LOGI(TAG, "mode=%d fs=%d | rxok=%u crc=%u drop=%u out=%u unk=%u | heap=%u",
+        ESP_LOGI(TAG, "mode=%d fs=%d | rxok=%u crc=%u drop=%u out=%u unk=%u | heap=%u | jit_max=%dus",
                  g_mode, (int)g_failsafe,
                  (unsigned)snap[0], (unsigned)snap[1], (unsigned)snap[2],
                  (unsigned)snap[3], (unsigned)snap[4],
-                 (unsigned)esp_get_free_heap_size());
+                 (unsigned)esp_get_free_heap_size(), (int)g_jit_us);
     }
 }
 

@@ -12,11 +12,10 @@ uint8_t crc_xor(const uint8_t *data, size_t len)
 
 size_t build_frame(uint8_t *out, uint8_t type, const uint8_t *payload, uint16_t payload_len)
 {
-    // len = taille de (type + payload), cf sujet
     uint16_t len = payload_len + 1;
 
     out[0] = FRAME_START;
-    out[1] = len & 0xff;          // little endian
+    out[1] = len & 0xff;
     out[2] = (len >> 8) & 0xff;
     out[3] = type;
 
@@ -24,8 +23,7 @@ size_t build_frame(uint8_t *out, uint8_t type, const uint8_t *payload, uint16_t 
         memcpy(&out[4], payload, payload_len);
     }
 
-    // le crc couvre tout sauf le start, donc a partir de out[1]
-    // soit len(2) + type(1) + payload = 3 + payload_len octets
+    // crc sur tout sauf le start
     out[4 + payload_len] = crc_xor(&out[1], 3 + payload_len);
 
     return 5 + payload_len;
